@@ -11,6 +11,27 @@ let maxChunkCoord = 0xFFFFF
 let minPixelCoord = ~0xFFFFFF
 let maxPixelCoord = 0xFFFFFF
 
+// Batched chunk requests (see handleChunkBatch).
+// Request framing: [u16 guard][u16 count][u16 reserved] followed by count * (i32 x, i32 y),
+// so the total length is always 6 + 8*count. No existing packet length is congruent to
+// 6 mod 8, which is what keeps this from colliding with the length-based switch below.
+let chunkBatchGuard = 25565
+// uWS drops frames over maxPayloadLength (32768), so a request can never legitimately
+// carry more than (32768 - 6) / 8 chunks. Anything above that is malformed.
+let maxChunkBatchCount = 4095
+// Cap on a single response message so one request can't force a multi-megabyte send.
+let maxChunkBatchBytes = 512 * 1024
+
+// Region level-of-detail: one averaged colour per chunk, 768 bytes for a whole region
+// instead of the ~200KB its 256 chunks cost at full detail. Lets a zoomed-out client
+// paint a coarse view immediately and fill in real chunks afterwards.
+// Request is a fixed 16 bytes: [u16 guard][u16 reserved][i32 rx][i32 ry][u16 w][u16 h].
+let regionLodGuard = 25566
+let maxLodRegions = 1024
+let maxLodBytes = 256 * 1024
+let minRegionCoord = ~0xFFFF
+let maxRegionCoord = 0xFFFF
+
 let maxMessageLengths = [
 	128,
 	128,
@@ -365,6 +386,11 @@ export class Client {
 			return
 		}
 		message = Buffer.from(message)
+		//batched chunk request - checked before the switch since its length is variable
+		if (message.length >= 14 && message.length % 8 === 6 && message.readUInt16LE(0) === chunkBatchGuard) {
+			this.handleChunkBatch(message)
+			return
+		}
 		switch (message.length) {
 			//request chunk
 			case 8: {
@@ -606,6 +632,20 @@ export class Client {
 				this.y = y
 				return
 			}
+			//region level-of-detail request
+			case 16: {
+				if (message.readUInt16LE(0) !== regionLodGuard) {
+					this.destroy()
+					return
+				}
+				this.handleRegionLod(
+					message.readInt32LE(4),
+					message.readInt32LE(8),
+					message.readUInt16LE(12),
+					message.readUInt16LE(14)
+				)
+				return
+			}
 			//rank verification
 			case 1: {
 				if (message[0] > this.rank) {
@@ -618,6 +658,136 @@ export class Client {
 				this.destroy()
 			}
 		}
+	}
+
+	//handles a batch of chunk requests sent as a single packet, replying with as few
+	//messages as possible instead of one per chunk. chunks in regions that aren't loaded
+	//yet are deferred exactly like the single-chunk path does.
+	handleChunkBatch(message) {
+		let count = message.readUInt16LE(2)
+		if (count === 0 || count !== (message.length - 6) / 8 || count > maxChunkBatchCount) {
+			this.destroy()
+			return
+		}
+		let parts = []
+		let pending = 3
+		for (let i = 0; i < count; i++) {
+			let offset = 6 + i * 8
+			let chunkX = message.readInt32LE(offset)
+			if (chunkX > maxChunkCoord || chunkX < minChunkCoord) {
+				this.destroy()
+				return
+			}
+			let chunkY = message.readInt32LE(offset + 4)
+			if (chunkY > maxChunkCoord || chunkY < minChunkCoord) {
+				this.destroy()
+				return
+			}
+			let chunkLocation = (chunkY & 0xf) << 4 | chunkX & 0xf
+			let regionId = ((chunkX >> 4) + 0x10000) + (((chunkY >> 4) + 0x10000) * 0x20000)
+			let region = this.world.getRegion(regionId)
+			if (!region.loaded) {
+				let deferredActions = this.handleUnloaded(region)
+				if (!deferredActions) return
+				let buffer = Buffer.allocUnsafe(1)
+				buffer[0] = chunkLocation
+				deferredActions.push(buffer)
+				if (++this.deferredAmount >= 100000 && this.rank < 3) {
+					this.destroy()
+					return
+				}
+				continue
+			}
+			region.lastHeld = this.server.currentTick
+			let data = region.getChunkData(chunkLocation)
+			//flush before exceeding the size cap, but never send an empty batch
+			if (parts.length && pending + 2 + data.length > maxChunkBatchBytes) {
+				this.sendChunkBatch(parts)
+				parts = []
+				pending = 3
+			}
+			parts.push(data)
+			pending += 2 + data.length
+		}
+		if (parts.length) this.sendChunkBatch(parts)
+	}
+
+	//Serves a rectangle of region downsamples. Regions not yet loaded are deferred the
+	//same way chunk requests are, so a cold region answers once it comes off disk.
+	handleRegionLod(regionX, regionY, width, height) {
+		if (width === 0 || height === 0) return
+		if (width * height > maxLodRegions) {
+			this.destroy()
+			return
+		}
+		let parts = []
+		let pending = 3
+		for (let dy = 0; dy < height; dy++) {
+			for (let dx = 0; dx < width; dx++) {
+				let rx = regionX + dx
+				let ry = regionY + dy
+				if (rx > maxRegionCoord || rx < minRegionCoord || ry > maxRegionCoord || ry < minRegionCoord) continue
+				let regionId = (rx + 0x10000) + ((ry + 0x10000) * 0x20000)
+				let region = this.world.getRegion(regionId)
+				if (!region.loaded) {
+					let deferredActions = this.handleUnloaded(region)
+					if (!deferredActions) return
+					//3-byte marker meaning "send this region's LOD once loaded"
+					deferredActions.push(Buffer.allocUnsafe(3))
+					if (++this.deferredAmount >= 100000 && this.rank < 3) {
+						this.destroy()
+						return
+					}
+					continue
+				}
+				region.lastHeld = this.server.currentTick
+				parts.push(rx, ry, region.getLodData())
+				pending += 776
+				if (pending >= maxLodBytes) {
+					this.sendRegionLod(parts)
+					parts = []
+					pending = 3
+				}
+			}
+		}
+		if (parts.length) this.sendRegionLod(parts)
+	}
+
+	//0x0C: [u8 opcode][u16 regionCount] then regionCount * ([i32 rx][i32 ry][768 bytes]),
+	//the 768 being one RGB triplet per chunk in chunk-location order.
+	sendRegionLod(parts) {
+		let count = parts.length / 3
+		let out = Buffer.allocUnsafeSlow(3 + count * 776)
+		out[0] = 0x0C
+		out.writeUInt16LE(count, 1)
+		let offset = 3
+		for (let i = 0; i < parts.length; i += 3) {
+			out.writeInt32LE(parts[i], offset)
+			out.writeInt32LE(parts[i + 1], offset + 4)
+			parts[i + 2].copy(out, offset + 8)
+			offset += 776
+		}
+		this.ws.send(out.buffer, true)
+	}
+
+	//0x0B: [u8 opcode][u16 chunkCount] then chunkCount * ([u16 byteLength][chunk packet]),
+	//where each embedded chunk packet is byte-identical to a standalone 0x02 message.
+	sendChunkBatch(parts) {
+		let total = 3
+		for (let i = 0; i < parts.length; i++) total += 2 + parts[i].length
+		//must be allocUnsafeSlow, same reason as Region.getChunkData
+		let out = Buffer.allocUnsafeSlow(total)
+		out[0] = 0x0B
+		out.writeUInt16LE(parts.length, 1)
+		let offset = 3
+		for (let i = 0; i < parts.length; i++) {
+			let part = parts[i]
+			out.writeUInt16LE(part.length, offset)
+			offset += 2
+			part.copy(out, offset)
+			offset += part.length
+		}
+		this.ws.send(out.buffer, true)
 	}
 
 	handleUnloaded(region) {
@@ -646,34 +816,66 @@ export class Client {
 		let deferredActions = this.deferredRegionActions.get(regionId)
 		this.deferredAmount -= deferredActions.length
 		this.deferredRegionActions.delete(regionId)
+		//A cold region is the common case on join and on zooming out, and every chunk in
+		//it lands here. Sending one message each is what made chunks trickle in, so
+		//consecutive chunk loads are gathered into a batch. The batch is flushed before
+		//any other action runs, which keeps ordering relative to pastes/erases exact.
+		let pendingChunks = []
+		let pendingBytes = 3
+		let flushChunks = () => {
+			if (pendingChunks.length === 0) return
+			if (pendingChunks.length === 1) {
+				this.ws.send(pendingChunks[0].buffer, true)
+			} else {
+				this.sendChunkBatch(pendingChunks)
+			}
+			pendingChunks = []
+			pendingBytes = 3
+		}
 		for (let action of deferredActions) {
 			switch (action.length) {
 				//request chunk
 				case 1: {
-					region.requestChunk(this, action[0])
+					region.lastHeld = this.server.currentTick
+					let data = region.getChunkData(action[0])
+					if (pendingChunks.length && pendingBytes + 2 + data.length > maxChunkBatchBytes) flushChunks()
+					pendingChunks.push(data)
+					pendingBytes += 2 + data.length
+					continue
+				}
+				//region level-of-detail
+				case 3: {
+					flushChunks()
+					region.lastHeld = this.server.currentTick
+					this.sendRegionLod([region.x, region.y, region.getLodData()])
 					continue
 				}
 				//set pixel
 				case 5: {
+					flushChunks()
 					region.setPixel(this, action[0], action[1], action[2], action[3], action[4])
 					continue
 				}
 				//chunk paste
 				case 769: {
+					flushChunks()
 					region.pasteChunk(action[0], action.subarray(1))
 					continue
 				}
 				//erase chunk
 				case 4: {
+					flushChunks()
 					region.eraseChunk(action[0], action[1], action[2], action[3])
 					continue
 				}
 				//protect chunk
 				case 2: {
+					flushChunks()
 					region.protectChunk(action[0], action[1])
 				}
 			}
 		}
+		flushChunks()
 	}
 
 	async handlePreWorld(message, isBinary) {
