@@ -24,7 +24,7 @@ export class Region {
     this.lastHeld = this.server.currentTick
     this.loadPromise = null
     this.dataModified = false
-    this.lodCache = null // cached downsample, see getLodData
+    this.lodCache = null
 
     this.destroyed = false
   }
@@ -67,12 +67,9 @@ export class Region {
     this.isEmpty = false
     this.dataModified = true
     this.latestDataBuffer = null // allow gc of outdated db buffer
-    this.lodCache = null // downsample no longer reflects the pixels
+    this.lodCache = null
   }
 
-  // One averaged colour per chunk, so a whole region is 768 bytes instead of the ~200KB
-  // its 256 chunks cost at full detail. Used to paint a zoomed-out view immediately.
-  // Ordered by chunk location, i.e. localChunkY * 16 + localChunkX, matching getChunkData.
   getLodData() {
     if (this.lodCache) return this.lodCache
     let out = Buffer.allocUnsafeSlow(768)
