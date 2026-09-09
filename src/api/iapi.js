@@ -42,12 +42,6 @@ function readJson(res, cb, err) {
 
 export function handleIapiRequest(server, res, req) {
   try {
-    let ip = server.getSocketIp(res, req);
-     if (ip !== "172.20.128.1") {
-       res.end("no");
-       return;
-     }
-
     let url = req.getUrl()
     if (url.length > 1 && url.endsWith("/")) url = url.substring(0, url.length - 1)
     switch (url) {

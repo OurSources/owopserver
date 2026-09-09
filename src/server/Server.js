@@ -117,7 +117,7 @@ export class Server {
 					let cookieHeader = req.getHeader("cookie");
 					let cookies = parseCookies(cookieHeader);
 					//read optional proxy headers (only if proxied)
-					let geoData = process.env.IS_PROXIED === "true" ? {
+					let geoData = this.isProxied() ? {
 						continentCode: req.getHeader("x-continent-code"),
 						countryCode: req.getHeader("x-country-code"),
 						countryIsInEu: req.getHeader("x-country-is-in-eu"),
@@ -138,7 +138,7 @@ export class Server {
 						aborted = true
 					})
 					//async get ip data
-					let ip = this.getSocketIp(res, req);
+					let ip = this.getClientIp(res, req);
 					ip = await this.ips.fetch(ip)
 					if (aborted) return
 					if (this.destroyed) {
@@ -296,13 +296,43 @@ export class Server {
 		return rate > 5.0 ? 5.0 : rate;
 	}
 
-	getSocketIp(res, req) {
+	isProxied() {
+		return process.env.IS_PROXIED === "true";
+	}
+
+	isAuthorizedReverseProxy(ip) {
+		let authProxies = process.env.AUTHORIZED_REVERSE_PROXIES;
+		if (typeof authProxies == "string") {
+			authProxies = authProxies.split(",").map(x => x.trim());
+			return authProxies.includes(ip);
+		}
+		return false;
+	}
+
+	getPreviousIpInProxyChain(proxies, currentIp) {
+		if (typeof proxies != "string") return currentIp;
+		if (currentIp.match(/[^\d\.]/g)) return currentIp;
+		const prevRegex = new RegExp(`\\b(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}),\\s*${currentIp.replace(/\./g, "\\.")}$`)
+		let prevMatch = prevRegex.exec(proxies);
+		if (!prevMatch) return currentIp;
+		return prevMatch[1];
+	}
+
+	getRawSocketIp(res, req) {
 		// Try to get IP from proxy headers first if proxied
-		if (process.env.IS_PROXIED === "true") {
+		if (this.isProxied()) {
 			return getIpFromHeader(req.getHeader(process.env.REAL_IP_HEADER));
 		}
 		// Fallback to direct IP
 		return textDecoder.decode(res.getRemoteAddressAsText());
+	}
+
+	getClientIp(res, req) {
+		let rawIp = this.getRawSocketIp(res, req);
+		if (this.isProxied() && this.isAuthorizedReverseProxy(rawIp)) {
+			return this.getPreviousIpInProxyChain(req.getHeader("x-forwarded-for"), rawIp);
+		}
+		return rawIp;
 	}
 
 	handleDonation(id, world, client, amount, memo) {

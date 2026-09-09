@@ -35,16 +35,11 @@ async function printStatus(server, res, req) {
   res.onAborted(() => {
     aborted = true
   })
-  let ip
-  if (process.env.IS_PROXIED === "true") {
-    ip = getIpFromHeader(req.getHeader(process.env.REAL_IP_HEADER))
-  } else {
-    ip = textDecoder.decode(res.getRemoteAddressAsText())
-  }
+  let ip = server.getClientIp(res, req)
 
     // Extract geoData from headers if proxied
   let geoData = {}
-  if (process.env.IS_PROXIED === "true") {
+  if (server.isProxied()) {
     geoData = {
       continentCode: req.getHeader("x-continent-code"),
       countryCode: req.getHeader("x-country-code"),
@@ -81,12 +76,7 @@ async function printStatus(server, res, req) {
 }
 
 function disconnectUser(server, res, req) {
-  let ip
-  if (process.env.IS_PROXIED === "true") {
-    ip = getIpFromHeader(req.getHeader(process.env.REAL_IP_HEADER))
-  } else {
-    ip = textDecoder.decode(res.getRemoteAddressAsText())
-  }
+  let ip = server.getClientIp(res, req)
   ip = server.ips.map.get(ip)
   if (!ip || ip.constructor === Promise || ip.clients.size === 0) {
     res.end('{"hadEffect":false}')
@@ -114,12 +104,7 @@ async function banSelf(server, res, req) {
   res.onAborted(() => {
     aborted = true
   })
-  let ip
-  if (process.env.IS_PROXIED === "true") {
-    ip = getIpFromHeader(req.getHeader(process.env.REAL_IP_HEADER))
-  } else {
-    ip = textDecoder.decode(res.getRemoteAddressAsText())
-  }
+  let ip = server.getClientIp()
   ip = await server.ips.fetch(ip)
   if (aborted) return
   if (ip.banExpiration === -1 || ip.banExpiration > Date.now()) {
