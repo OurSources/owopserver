@@ -24,6 +24,7 @@ export class Region {
     this.lastHeld = this.server.currentTick
     this.loadPromise = null
     this.dataModified = false
+    this.lodCache = null
 
     this.destroyed = false
   }
@@ -66,6 +67,38 @@ export class Region {
     this.isEmpty = false
     this.dataModified = true
     this.latestDataBuffer = null // allow gc of outdated db buffer
+    this.lodCache = null
+  }
+
+  getLodData() {
+    if (this.lodCache) return this.lodCache
+    let out = Buffer.allocUnsafeSlow(768)
+    if (this.isEmpty === true || !this.pixels) {
+      let color = this.world.bgcolor.value
+      let r = color >> 16, g = (color & 0x00ff00) >> 8, b = color & 0x0000ff
+      for (let i = 0; i < 256; i++) {
+        out[i * 3] = r
+        out[i * 3 + 1] = g
+        out[i * 3 + 2] = b
+      }
+      this.lodCache = out
+      return out
+    }
+    for (let chunkLocation = 0; chunkLocation < 256; chunkLocation++) {
+      let base = chunkLocation * 768
+      let r = 0, g = 0, b = 0
+      for (let i = 0; i < 768; i += 3) {
+        r += this.pixels[base + i]
+        g += this.pixels[base + i + 1]
+        b += this.pixels[base + i + 2]
+      }
+      let o = chunkLocation * 3
+      out[o] = (r / 256) | 0
+      out[o + 1] = (g / 256) | 0
+      out[o + 2] = (b / 256) | 0
+    }
+    this.lodCache = out
+    return out
   }
 
   updateDataBuffer() {
