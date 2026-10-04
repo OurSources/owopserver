@@ -1,7 +1,8 @@
 export async function verifyCaptchaToken(token) {
 	try {
-		let result = await fetch(`https://www.google.com/recaptcha/api/siteverify?secret=${process.env.CAPTCHA_SECRET}&response=${encodeURIComponent(token)}`, {
-			method: "POST"
+		let result = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+			method: "POST",
+			body: new URLSearchParams({ secret: process.env.CAPTCHA_SECRET, response: token })
 		})
 		result = await result.json()
 		return result.success === true
