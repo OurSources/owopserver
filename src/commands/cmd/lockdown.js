@@ -10,26 +10,26 @@ export default {
 	}, async execute(client, args){
 		if(client.localStaff) return client.sendMessage({
 			sender: 'server',
-			data:{
-				type: 'error',
-			},
-			text: `Only global admins have access to this command.`
+			type: 'error',
+			data: {
+				message: `Only global admins have access to this command.`
+			}
 		});
 		if(!args.length) return client.sendMessage({
 			sender: 'server',
+			type: 'error',
 			data:{
-				type: 'error',
-			},
-			text: `${this.data.description}\nUsage: /${this.data.usage}`
+				message: `${this.data.description}\nUsage: /${this.data.usage}`	
+			}
 		});
 		let newstate = args[0]==="true";
 		client.server.lockdown = newstate;
 		client.sendMessage({
 			sender: 'server',
+			type: 'info',
 			data:{
-				type: 'info',
-			},
-			text: `${newstate?"Enabled":"Disabled"} lockdown.`
+				message: `${newstate?"Enabled":"Disabled"} lockdown.`	
+			}
 		});
 	}
 }

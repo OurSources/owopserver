@@ -92,10 +92,10 @@ export async function loadCommands(server, client = null) {
 		// assume commands were reloaded, inform client.
 		client.sendMessage({
 			sender: 'server',
+			type: 'info',
 			data: {
-				type: 'info',
-			},
-			text: `[All commands reloaded]`
+				message: `[All commands reloaded]`
+			}
 		});
 	}
 }

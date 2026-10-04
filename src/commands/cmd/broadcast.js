@@ -4,7 +4,7 @@ import { usageString } from "../commandHandler.js";
 export default {
 	data: {
 		name: "broadcast",
-		minRank: RANK.NONE,
+		minRank: RANK.ADMIN,
 		usage: 'broadcast <message>',
 		hidden: true,
 	}, async execute (client, args) {
