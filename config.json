@@ -1,7 +1,7 @@
 {
-  "defaultPquota": "48,4",
-  "captchaSecurity": 0,
-  "maxConnectionsPerIp": 4,
-  "motd": "owo wat dis?!",
-  "appealMessage": "Appeal by contacting the website owner."
+    "defaultPquota": "48,4",
+    "captchaSecurity": 0,
+    "maxConnectionsPerIp": 4,
+    "motd": "owo wat dis?!",
+    "appealMessage": "Appeal by contacting the website owner."
 }
